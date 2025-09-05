@@ -6,27 +6,18 @@ using Newtonsoft.Json;
 using UnityEditor;
 using System.Net.Sockets;
 using System.Net;
-using System.Threading;
-using System.Linq;
-using System.Text;
 
 public class NetworkGameManager : MonoBehaviour
 {
     [Header("Network Settings")]
     [SerializeField] private int serverPort = 8888;
     [SerializeField] private int discoveryPort = 9999;
-    [SerializeField] public bool startAsServer = false;
-    [SerializeField] private bool autoDiscoverOnStart = false;
-    [SerializeField] private string serverName = "My Game Server";
-    [SerializeField] private string manualServerIP = "192.64.58.157";
+    [SerializeField] private bool startAsServer = false;
+    [SerializeField] private string serverIP = "192.64.58.157";
 
     [Header("Prefabs")]
     [SerializeField] private GameObject playerPrefab;
     [SerializeField] private GameObject[] networkPrefabs;
-
-    [Header("Auto Discovery Settings")]
-    [SerializeField] private float discoveryTimeout = 5f;
-    [SerializeField] private bool listenForServerAnnouncements = true;
 
     private Dictionary<uint, NetworkGameObject> networkObjects;
     private UnityNetworkClient client;
@@ -34,25 +25,15 @@ public class NetworkGameManager : MonoBehaviour
     private uint nextNetworkId = 1;
     private bool isServer = false;
 
-    // Auto discovery components
-    private UdpClient announcementListener;
-    private Thread announcementThread;
-    private CancellationTokenSource announcementCancellationToken;
-    private List<ServerInfo> discoveredServers;
-
     public bool IsConnected => isServer || (client != null && client.IsConnected);
     public bool IsServer => isServer;
-    public List<ServerInfo> DiscoveredServers => discoveredServers?.ToList() ?? new List<ServerInfo>();
 
     public event System.Action<NetworkGameObject> OnGameObjectSpawned;
     public event System.Action<uint> OnGameObjectDestroyed;
-    public event System.Action<ServerInfo> OnServerDiscovered;
-    public event System.Action<string> OnConnectionStatusChanged;
 
     private void Awake()
     {
         networkObjects = new Dictionary<uint, NetworkGameObject>();
-        discoveredServers = new List<ServerInfo>();
 
         // Ensure we have a main thread dispatcher
         if (FindObjectOfType<UnityMainThreadDispatcher>() == null)
@@ -67,42 +48,31 @@ public class NetworkGameManager : MonoBehaviour
     {
         if (startAsServer)
         {
+            serverIP = GetLocalIPv4();
+            Debug.Log("server ip is:" + serverIP);
             StartServer();
         }
-        else if (autoDiscoverOnStart)
-        {
-            AutoDiscoverAndConnect();
-        }
-
-       
     }
 
     private string GetLocalIPv4()
     {
         string localIP = "";
-        try
+        var host = Dns.GetHostEntry(Dns.GetHostName());
+        foreach (var ip in host.AddressList)
         {
-            var host = Dns.GetHostEntry(Dns.GetHostName());
-            foreach (var ip in host.AddressList)
+            if (ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip))
             {
-                if (ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip))
-                {
-                    localIP = ip.ToString();
-                    break;
-                }
+                localIP = ip.ToString();
+                break;
             }
         }
-        catch (Exception ex)
-        {
-            Debug.LogError($"Failed to get local IP: {ex.Message}");
-        }
-        return string.IsNullOrEmpty(localIP) ? "127.0.0.1" : localIP;
+        return string.IsNullOrEmpty(localIP) ? "can't find this pc IPv4 address" : localIP;
     }
 
     public async void StartServer()
     {
-        string localIP = GetLocalIPv4();
-        Debug.Log($"Starting server on IP: {localIP}:{serverPort}");
+        serverIP = GetLocalIPv4();
+        Debug.Log("server ip is:" + serverIP);
 
         server = new UnityNetworkServer();
         isServer = true;
@@ -111,29 +81,17 @@ public class NetworkGameManager : MonoBehaviour
         server.OnClientDisconnected += OnClientDisconnected;
         server.OnMessageReceived += OnServerMessageReceived;
 
-        bool success = server.StartServer(serverPort, discoveryPort, serverName);
+        bool success = server.StartServer(serverPort, discoveryPort);
         if (success)
         {
-            Debug.Log($"Server '{serverName}' started successfully on {localIP}:{serverPort}!");
-            OnConnectionStatusChanged?.Invoke($"Server started on {localIP}:{serverPort}");
-        }
-        else
-        {
-            OnConnectionStatusChanged?.Invoke("Failed to start server");
+            Debug.Log("Server started successfully!");
         }
     }
 
     public async Task<bool> StartClient(string ip = null)
     {
-        // Start listening for server announcements if not server
-        if (!startAsServer && listenForServerAnnouncements)
-        {
-            Debug.Log("start as server is " + startAsServer);
-            StartListeningForServerAnnouncements();
-        }
-
         if (string.IsNullOrEmpty(ip))
-            ip = manualServerIP;
+            ip = serverIP;
 
         client = new UnityNetworkClient();
         isServer = false;
@@ -142,160 +100,17 @@ public class NetworkGameManager : MonoBehaviour
         client.OnConnected += OnClientConnected;
         client.OnDisconnected += OnClientDisconnected;
 
-        OnConnectionStatusChanged?.Invoke($"Connecting to {ip}:{serverPort}...");
-
         bool success = await client.ConnectToServer(ip, serverPort);
         if (success)
         {
             Debug.Log($"Connected to server at {ip}:{serverPort}");
-            OnConnectionStatusChanged?.Invoke($"Connected to {ip}:{serverPort}");
             return true;
         }
         else
         {
             Debug.LogError("Failed to connect to server");
-            OnConnectionStatusChanged?.Invoke($"Failed to connect to {ip}:{serverPort}");
             return false;
         }
-    }
-
-    // New method: Auto discover and connect to best available server
-    public async Task AutoDiscoverAndConnectAsync()
-    {
-        OnConnectionStatusChanged?.Invoke("Auto-discovering servers...");
-
-        if (client == null)
-            client = new UnityNetworkClient();
-
-        client.OnMessageReceived += OnClientMessageReceived;
-        client.OnConnected += OnClientConnected;
-        client.OnDisconnected += OnClientDisconnected;
-
-        var servers = await client.DiscoverServersWithInfo(discoveryPort, (int)(discoveryTimeout * 1000));
-
-        if (servers.Count > 0)
-        {
-            // Sort servers by player count (prefer less crowded servers) or by response time
-            servers.Sort((a, b) => a.PlayerCount.CompareTo(b.PlayerCount));
-
-            var bestServer = servers[0];
-            Debug.Log($"Found {servers.Count} server(s). Connecting to best option: {bestServer.ServerName}");
-
-            bool connected = await StartClient(bestServer.IPAddress);
-            if (connected)
-            {
-                Debug.Log($"Successfully auto-connected to {bestServer.ServerName} at {bestServer.IPAddress}");
-                OnConnectionStatusChanged?.Invoke($"Connected to {bestServer.ServerName}");
-            }
-            else
-            {
-                OnConnectionStatusChanged?.Invoke("Failed to connect to discovered server");
-            }
-        }
-        else
-        {
-            Debug.Log("No servers found during auto-discovery");
-            OnConnectionStatusChanged?.Invoke("No servers found");
-        }
-    }
-
-    public async void AutoDiscoverAndConnect()
-    {
-        await AutoDiscoverAndConnectAsync();
-    }
-
-    // New method: Start listening for server announcements
-    private void StartListeningForServerAnnouncements()
-    {
-        try
-        {
-            announcementListener = new UdpClient(9998); // Listen on announcement port
-            announcementCancellationToken = new CancellationTokenSource();
-
-            announcementThread = new Thread(ListenForAnnouncements) { IsBackground = true };
-            announcementThread.Start();
-
-            Debug.Log("Started listening for server announcements on port 9998");
-        }
-        catch (Exception ex)
-        {
-            Debug.LogError($"Failed to start announcement listener: {ex.Message}");
-        }
-    }
-
-    private void ListenForAnnouncements()
-    {
-        while (!announcementCancellationToken.Token.IsCancellationRequested)
-        {
-            try
-            {
-                IPEndPoint serverEndPoint = null;
-                var data = announcementListener.Receive(ref serverEndPoint);
-                string jsonData = Encoding.UTF8.GetString(data);
-                var message = JsonConvert.DeserializeObject<NetworkMessage>(jsonData);
-
-                if (message.Type == MessageType.ServerAnnouncement)
-                {
-                    var serverInfo = JsonConvert.DeserializeObject<ServerInfo>(message.Data);
-                    if (serverInfo != null)
-                    {
-                        serverInfo.IPAddress = serverEndPoint.Address.ToString();
-
-                        // Update or add server to discovered list
-                        var existingServer = discoveredServers.Find(s => s.IPAddress == serverInfo.IPAddress && s.Port == serverInfo.Port);
-                        if (existingServer != null)
-                        {
-                            // Update existing server info
-                            int index = discoveredServers.IndexOf(existingServer);
-                            discoveredServers[index] = serverInfo;
-                        }
-                        else
-                        {
-                            // Add new server
-                            discoveredServers.Add(serverInfo);
-                            UnityMainThreadDispatcher.Enqueue(() => {
-                                Debug.Log($"Discovered server via announcement: {serverInfo.ServerName} at {serverInfo.IPAddress}:{serverInfo.Port}");
-                                OnServerDiscovered?.Invoke(serverInfo);
-                            });
-                        }
-
-                        // Clean up old servers (remove servers not seen for 30 seconds)
-                        var currentTime = (uint)Environment.TickCount;
-                        discoveredServers.RemoveAll(s => currentTime - s.Timestamp > 30000);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                if (!announcementCancellationToken.Token.IsCancellationRequested)
-                    Debug.LogError($"Announcement listener error: {ex.Message}");
-            }
-        }
-    }
-
-    // Enhanced method: Discover servers with more info
-    public async Task<List<ServerInfo>> DiscoverServersAsync()
-    {
-        OnConnectionStatusChanged?.Invoke("Discovering servers...");
-
-        if (client == null)
-            client = new UnityNetworkClient();
-
-        var servers = await client.DiscoverServersWithInfo(discoveryPort, (int)(discoveryTimeout * 1000));
-
-        // Merge with servers discovered via announcements
-        foreach (var announcedServer in discoveredServers)
-        {
-            if (!servers.Exists(s => s.IPAddress == announcedServer.IPAddress && s.Port == announcedServer.Port))
-            {
-                servers.Add(announcedServer);
-            }
-        }
-
-        Debug.Log($"Total servers discovered: {servers.Count}");
-        OnConnectionStatusChanged?.Invoke($"Found {servers.Count} server(s)");
-
-        return servers;
     }
 
     public async void DiscoverAndConnectToServer()
@@ -408,7 +223,6 @@ public class NetworkGameManager : MonoBehaviour
     private void OnClientDisconnected()
     {
         Debug.Log("Disconnected from server!");
-        OnConnectionStatusChanged?.Invoke("Disconnected from server");
     }
 
     private void OnServerMessageReceived(uint senderId, NetworkMessage message)
@@ -501,7 +315,6 @@ public class NetworkGameManager : MonoBehaviour
             Debug.LogError($"Failed to find prefab for object type: {data.ObjectType}");
         }
     }
-
     private void UpdateNetworkObjectFromData(NetworkData data)
     {
         if (networkObjects.ContainsKey(data.NetworkId))
@@ -522,7 +335,6 @@ public class NetworkGameManager : MonoBehaviour
             SpawnNetworkObjectFromData(data);
         }
     }
-
     private void DestroyNetworkObject(uint networkId)
     {
         if (networkObjects.ContainsKey(networkId))
@@ -574,11 +386,6 @@ public class NetworkGameManager : MonoBehaviour
     {
         server?.StopServer();
         client?.Disconnect();
-
-        // Stop announcement listener
-        announcementCancellationToken?.Cancel();
-        announcementThread?.Join(1000);
-        announcementListener?.Close();
     }
 
     private void OnApplicationPause(bool pauseStatus)
@@ -615,38 +422,6 @@ public class NetworkGameManager : MonoBehaviour
         }
     }
 
-    // New utility methods for UI integration
-    public async Task<bool> ConnectToServer(ServerInfo serverInfo)
-    {
-        return await StartClient(serverInfo.IPAddress);
-    }
-
-    public void StopConnection()
-    {
-        if (isServer)
-        {
-            server?.StopServer();
-            server = null;
-            isServer = false;
-        }
-        else
-        {
-            client?.Disconnect();
-            client = null;
-        }
-        OnConnectionStatusChanged?.Invoke("Disconnected");
-    }
-
-    // Get current connection info
-    public string GetConnectionStatus()
-    {
-        if (isServer)
-            return $"Server: {GetLocalIPv4()}:{serverPort} ({server?.ConnectedClients ?? 0} clients)";
-        else if (client != null && client.IsConnected)
-            return $"Client: Connected (ID: {client.ClientId})";
-        else
-            return "Disconnected";
-    }
 }
 
 

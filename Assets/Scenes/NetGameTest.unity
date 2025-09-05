@@ -262,7 +262,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &239128550
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -397,13 +397,9 @@ MonoBehaviour:
   serverPort: 8888
   discoveryPort: 9999
   startAsServer: 0
-  autoDiscoverOnStart: 0
-  serverName: My Game Server
-  manualServerIP: 192.64.58.157
+  serverIP: 192.64.58.157
   playerPrefab: {fileID: 269063078039675412, guid: 8ca784548e769cc4c89a5f8504bf9fba, type: 3}
   networkPrefabs: []
-  discoveryTimeout: 5
-  listenForServerAnnouncements: 1
 --- !u!4 &267015057
 Transform:
   m_ObjectHideFlags: 0
@@ -922,7 +918,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &891693130
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1408,18 +1404,8 @@ MonoBehaviour:
   startClientButton: {fileID: 1102833707}
   discoverButton: {fileID: 239128550}
   spawnPlayerButton: {fileID: 326923783}
-  autoDiscoverButton: {fileID: 891693130}
-  refreshServersButton: {fileID: 0}
-  disconnectButton: {fileID: 0}
   serverIPInput: {fileID: 0}
-  serverNameInput: {fileID: 0}
   statusText: {fileID: 0}
-  connectionInfoText: {fileID: 0}
-  serverListContent: {fileID: 0}
-  serverListItemPrefab: {fileID: 0}
-  serverListScrollRect: {fileID: 0}
-  autoDiscoveryToggle: {fileID: 0}
-  listenForAnnouncementsToggle: {fileID: 0}
 --- !u!114 &1559812371
 MonoBehaviour:
   m_ObjectHideFlags: 0

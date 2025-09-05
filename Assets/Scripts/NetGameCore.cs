@@ -82,11 +82,8 @@ public enum MessageType
     PlayerInput,
     Heartbeat,
     Discovery,
-    DiscoveryResponse,
-    ServerAnnouncement
+    DiscoveryResponse
 }
-
-
 
 // Network message structure
 [System.Serializable]
@@ -103,33 +100,13 @@ public class NetworkMessage
     }
 }
 
-// server's info
-[System.Serializable]
-public class ServerInfo
-{
-    public string ServerName;
-    public string IPAddress;
-    public int Port;
-    public int PlayerCount;
-    public int MaxPlayers;
-    public string GameVersion;
-    public uint Timestamp;
-
-    public ServerInfo()
-    {
-        Timestamp = (uint)Environment.TickCount;
-        GameVersion = Application.version;
-        MaxPlayers = 8;
-    }
-}
-
 // GameObject network data
 [System.Serializable]
 public class NetworkData
 {
     public uint NetworkId;
     public SerializableVector3 Position;
-    public SerializableVector3 Rotation; 
+    public SerializableVector3 Rotation;
     public string ObjectType;
     public uint OwnerId;
     public Dictionary<string, object> CustomData;
@@ -238,10 +215,9 @@ public class UnityNetworkClient
         UnityMainThreadDispatcher.Enqueue(() => OnDisconnected?.Invoke());
     }
 
-    // Enhanced server discovery with server info
-    public async Task<List<ServerInfo>> DiscoverServersWithInfo(int discoveryPort = 9999, int timeout = 5000)
+    public async Task<List<IPEndPoint>> DiscoverServers(int discoveryPort = 9999, int timeout = 5000)
     {
-        var servers = new List<ServerInfo>();
+        var servers = new List<IPEndPoint>();
         var discoveryClient = new UdpClient();
         discoveryClient.EnableBroadcast = true;
 
@@ -272,13 +248,7 @@ public class UnityNetworkClient
 
                     if (responseMsg.Type == MessageType.DiscoveryResponse)
                     {
-                        var serverInfo = JsonConvert.DeserializeObject<ServerInfo>(responseMsg.Data);
-                        if (serverInfo != null)
-                        {
-                            serverInfo.IPAddress = responseEndPoint.Address.ToString();
-                            servers.Add(serverInfo);
-                            Debug.Log($"Discovered server: {serverInfo.ServerName} at {serverInfo.IPAddress}:{serverInfo.Port}");
-                        }
+                        servers.Add(responseEndPoint);
                     }
                 }
                 catch (SocketException) { }
@@ -295,26 +265,6 @@ public class UnityNetworkClient
 
         return servers;
     }
-
-    public async Task<List<IPEndPoint>> DiscoverServers(int discoveryPort = 9999, int timeout = 5000)
-    {
-        var serverInfos = await DiscoverServersWithInfo(discoveryPort, timeout);
-        var endpoints = new List<IPEndPoint>();
-
-        foreach (var serverInfo in serverInfos)
-        {
-            try
-            {
-                endpoints.Add(new IPEndPoint(IPAddress.Parse(serverInfo.IPAddress), serverInfo.Port));
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"Failed to parse server endpoint: {ex.Message}");
-            }
-        }
-
-        return endpoints;
-    }
 }
 
 
@@ -322,18 +272,12 @@ public class UnityNetworkServer
 {
     private UdpClient udpServer;
     private UdpClient discoveryServer;
-    private UdpClient announcementClient;
-
     private Dictionary<uint, IPEndPoint> clients;
     private uint nextClientId = 1;
     private bool isRunning = false;
     private Thread serverThread;
     private Thread discoveryThread;
-    private Thread announcementThread;
-
     private CancellationTokenSource cancellationToken;
-
-    private ServerInfo serverInfo;
 
     public event Action<uint, NetworkMessage> OnMessageReceived;
     public event Action<uint> OnClientConnected;
@@ -341,32 +285,21 @@ public class UnityNetworkServer
 
     public int Port { get; private set; }
     public int ConnectedClients => clients.Count;
-    public ServerInfo ServerInfo => serverInfo;
 
     public UnityNetworkServer()
     {
         clients = new Dictionary<uint, IPEndPoint>();
-        serverInfo = new ServerInfo();
     }
 
-    public bool StartServer(int port, int discoveryPort = 9999, string serverName = null)
+    public bool StartServer(int port, int discoveryPort = 9999)
     {
         try
         {
             Port = port;
             udpServer = new UdpClient(port);
             discoveryServer = new UdpClient(discoveryPort);
-
-            announcementClient = new UdpClient();
-            announcementClient.EnableBroadcast = true;
-
             cancellationToken = new CancellationTokenSource();
             isRunning = true;
-
-            // Setup server info
-            serverInfo.ServerName = string.IsNullOrEmpty(serverName) ? $"Unity Game Server ({SystemInfo.deviceName})" : serverName;
-            serverInfo.Port = port;
-            serverInfo.IPAddress = GetLocalIPv4();
 
             serverThread = new Thread(ServerLoop) { IsBackground = true };
             serverThread.Start();
@@ -374,11 +307,7 @@ public class UnityNetworkServer
             discoveryThread = new Thread(DiscoveryLoop) { IsBackground = true };
             discoveryThread.Start();
 
-            announcementThread = new Thread(AnnouncementLoop) { IsBackground = true };
-            announcementThread.Start();
-
-            Debug.Log($"Server '{serverInfo.ServerName}' started on {serverInfo.IPAddress}:{port}");
-            Debug.Log($"Broadcasting server info every 5 seconds...");
+            Debug.Log($"Server started on port {port}");
             return true;
         }
         catch (Exception ex)
@@ -387,67 +316,7 @@ public class UnityNetworkServer
             return false;
         }
     }
-    private string GetLocalIPv4()
-    {
-        try
-        {
-            var host = Dns.GetHostEntry(Dns.GetHostName());
-            foreach (var ip in host.AddressList)
-            {
-                if (ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip))
-                {
-                    return ip.ToString();
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Debug.LogError($"Failed to get local IP: {ex.Message}");
-        }
-        return "127.0.0.1";
-    }
 
-
-    private void AnnouncementLoop()
-    {
-        while (isRunning && !cancellationToken.Token.IsCancellationRequested)
-        {
-            try
-            {
-                BroadcastServerAnnouncement();
-                Thread.Sleep(5000); // Broadcast every 5 seconds
-            }
-            catch (Exception ex)
-            {
-                if (isRunning)
-                    Debug.LogError($"Announcement error: {ex.Message}");
-            }
-        }
-    }
-    private void BroadcastServerAnnouncement()
-    {
-        try
-        {
-            serverInfo.PlayerCount = clients.Count;
-            serverInfo.Timestamp = (uint)Environment.TickCount;
-
-            var announcement = new NetworkMessage
-            {
-                Type = MessageType.ServerAnnouncement,
-                Data = JsonConvert.SerializeObject(serverInfo)
-            };
-
-            string jsonData = JsonConvert.SerializeObject(announcement);
-            byte[] data = Encoding.UTF8.GetBytes(jsonData);
-            var broadcastEndPoint = new IPEndPoint(IPAddress.Broadcast, 9998); // Different port for announcements
-
-            announcementClient.Send(data, data.Length, broadcastEndPoint);
-        }
-        catch (Exception ex)
-        {
-            Debug.LogError($"Failed to broadcast server announcement: {ex.Message}");
-        }
-    }
     private void ServerLoop()
     {
         while (isRunning && !cancellationToken.Token.IsCancellationRequested)
@@ -482,9 +351,6 @@ public class UnityNetworkServer
 
                 if (message.Type == MessageType.Discovery)
                 {
-                    serverInfo.PlayerCount = clients.Count;
-                    serverInfo.Timestamp = (uint)Environment.TickCount;
-
                     var response = new NetworkMessage
                     {
                         Type = MessageType.DiscoveryResponse,
@@ -494,8 +360,6 @@ public class UnityNetworkServer
                     string responseJson = JsonConvert.SerializeObject(response);
                     byte[] responseData = Encoding.UTF8.GetBytes(responseJson);
                     discoveryServer.Send(responseData, responseData.Length, clientEndPoint);
-                   
-                    Debug.Log($"Responded to discovery from {clientEndPoint}");
                 }
             }
             catch (Exception ex)
@@ -587,11 +451,8 @@ public class UnityNetworkServer
         cancellationToken?.Cancel();
         serverThread?.Join(1000);
         discoveryThread?.Join(1000);
-        announcementThread?.Join(1000);
         udpServer?.Close();
         discoveryServer?.Close();
-        announcementClient?.Close();
         Debug.Log("Server stopped");
     }
 }
-

@@ -9,7 +9,7 @@ public class NetworkGameObject : MonoBehaviour
     [SerializeField] private bool isNetworkOwned;
     [SerializeField] private uint ownerId;
     [SerializeField] private string objectType;
-    [SerializeField] private float sendRate = 20f; 
+    [SerializeField] private float sendRate = 20f;
 
     private float lastSendTime;
     private Vector3 lastSentPosition;
@@ -148,7 +148,7 @@ public class NetworkPlayer : NetworkGameObject
         playerCamera = GetComponentInChildren<Camera>();
     }
 
-  
+
     protected override void Start()
     {
         base.Start();
